@@ -2,16 +2,15 @@
 
 [![natpass](https://github.com/lwch/natpass/actions/workflows/build.yml/badge.svg)](https://github.com/lwch/natpass/actions/workflows/build.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/lwch/natpass)](https://goreportcard.com/report/github.com/lwch/natpass)
-[![go-mod](https://img.shields.io/github/go-mod/go-version/lwch/natpass)](https://github.com/lwch/natpass)
 [![license](https://img.shields.io/github/license/lwch/natpass)](https://opensource.org/licenses/MIT)
-[![platform](https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macos-lightgrey.svg)](https://github.com/lwch/natpass)
 [![QQ群711086098](https://img.shields.io/badge/QQ%E7%BE%A4-711086098-success)](https://jq.qq.com/?_wv=1027&k=6Fz2vkVE)
+![downloads](https://img.shields.io/github/downloads/lwch/natpass/total)
 
 新一代主机管理工具，支持shell管理，支持远程桌面管理[实现原理](docs/desc.md)
 
 1. [如何部署](docs/startup.md)
 2. [规则配置](docs/rules.md)
-3. [开发文档](https://jkstack.github.io/natpass/)
+3. [开发文档](https://lwch.gitbook.io/natpass/dev)
 
 功能与特性：
 
@@ -30,7 +29,8 @@
    - 支持全屏显示
    - 支持滚动
    - 支持远程剪贴板设置与读取
-10. 支持多种操作系统
+10. 支持code-server
+11. 支持多种操作系统
    - [x] linux
    - [x] windows
    - [x] macos
@@ -41,41 +41,33 @@ dashboard页面
 
 ![dashboard](docs/imgs/dashboard.png)
 
-linux命令行效果
+命令行
 
-![linux-shell](docs/imgs/shell_linux.png)
+| platform | 386 | amd64 | arm | arm64 |
+| -------- | :-: | :---: | :-: | :---: |
+| windows | ✅ | ✅ | ✅ | ✅ |
+| macos   |    | ✅ |     | ✅ |
+| linux   | ✅ | ✅ | ✅ | ✅ |
 
-windows命令行效果
+![shell](docs/imgs/shell.gif)
 
-![windows-shell](docs/imgs/shell_win.png)
+远程桌面
 
-windows2008远程桌面
+| platform | 386 | amd64 | arm | arm64 |
+| -------- | :-: | :---: | :-: | :---: |
+| windows | ✅ | ✅ | ❌ | ❌ |
+| macos   |    | ✅ |    | ✅ |
+| linux   | ✅ | ✅ | ❌ | ❌ |
 
-![win2008-vnc](docs/imgs/vnc_win2008.png)
+![vnc](docs/imgs/vnc.gif)
 
-windows10远程桌面
-
-![win10-vnc](docs/imgs/vnc_win10.png)
-
-windows11远程桌面
-
-![win11-vnc](docs/imgs/vnc_win11.png)
-
-ubuntu远程桌面
-
-![ubuntu-vnc](docs/imgs/vnc_ubuntu.png)
-
-fedora远程桌面
-
-![fedora-vnc](docs/imgs/vnc_fedora.png)
-
-deepin远程桌面
-
-![deepin-vnc](docs/imgs/vnc_deepin.png)
-
-windows读取剪贴板内容
+windows剪贴板内容
 
 ![vnc-clipboard](docs/imgs/vnc_clipboard.png)
+
+code-server支持
+
+![code-server](docs/imgs/code_server.png)
 
 ## 性能
 

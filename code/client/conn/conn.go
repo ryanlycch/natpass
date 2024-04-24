@@ -1,6 +1,7 @@
 package conn
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"strings"
@@ -14,30 +15,36 @@ import (
 	"github.com/lwch/runtime"
 )
 
+const dropBlockTimeout = 10 * time.Minute
+
 // Conn connection
 type Conn struct {
 	sync.RWMutex
-	cfg         *global.Configure
-	conn        *network.Conn
-	read        map[string]chan *network.Msg // link id => channel
-	unknownRead chan *network.Msg            // read message without link
-	write       chan *network.Msg
-	lockDrop    sync.RWMutex
-	drop        map[string]time.Time
+	cfg          *global.Configure            // configure
+	conn         *network.Conn                // connection wrap, read write with timeout
+	read         map[string]chan *network.Msg // link id => channel
+	unknownRead  chan *network.Msg            // read message without link
+	onDisconnect chan string                  // on disconnect channel, the value is clientid
+	write        chan *network.Msg            // write queue
+	lockDrop     sync.RWMutex                 // drop mutex
+	drop         map[string]time.Time         // drop cache, drop message when this link is closed
+	// runtime
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // New new connection
 func New(cfg *global.Configure) *Conn {
 	conn := &Conn{
-		cfg:         cfg,
-		read:        make(map[string]chan *network.Msg),
-		unknownRead: make(chan *network.Msg, 1024),
-		write:       make(chan *network.Msg, 1024),
-		drop:        make(map[string]time.Time),
+		cfg:          cfg,
+		read:         make(map[string]chan *network.Msg),
+		unknownRead:  make(chan *network.Msg, 1024),
+		onDisconnect: make(chan string, 1024),
+		write:        make(chan *network.Msg, 10*1024*1024),
+		drop:         make(map[string]time.Time),
 	}
-	var err error
-	conn.conn, err = conn.tryConnect()
-	runtime.Assert(err)
+	runtime.Assert(conn.connect())
+	conn.ctx, conn.cancel = context.WithCancel(context.Background())
 	go conn.loopRead()
 	go conn.loopWrite()
 	go conn.keepalive()
@@ -45,42 +52,52 @@ func New(cfg *global.Configure) *Conn {
 	return conn
 }
 
-func (conn *Conn) connect() (*network.Conn, error) {
+// connect connect server and write handshake packet
+func (conn *Conn) connect() error {
 	var dial net.Conn
 	var err error
 	if conn.cfg.UseSSL {
-		dial, err = tls.Dial("tcp", conn.cfg.Server, nil)
+		if conn.cfg.SSLInsecure { // disable sni
+			rawConn, err := net.Dial("tcp", conn.cfg.Server)
+			if err != nil {
+				logging.Error("raw dial: %v", err)
+				return err
+			}
+			cfg := new(tls.Config)
+			cfg.InsecureSkipVerify = true
+			dial = tls.Client(rawConn, cfg)
+			err = dial.(*tls.Conn).Handshake()
+			if err != nil {
+				rawConn.Close()
+			}
+		} else {
+			dial, err = tls.Dial("tcp", conn.cfg.Server, nil)
+		}
 	} else {
 		dial, err = net.Dial("tcp", conn.cfg.Server)
 	}
 	if err != nil {
 		logging.Error("dial: %v", err)
-		return nil, err
+		return err
 	}
 	cn := network.NewConn(dial)
 	err = writeHandshake(cn, conn.cfg)
 	if err != nil {
 		logging.Error("write handshake: %v", err)
-		return nil, err
+		return err
 	}
 	logging.Info("%s connected", conn.cfg.Server)
-	return cn, nil
+	conn.conn = cn
+	return nil
 }
 
-func (conn *Conn) tryConnect() (*network.Conn, error) {
-	var ret *network.Conn
-	var err error
-	for i := 0; i < 10; i++ {
-		ret, err = conn.connect()
-		if err == nil {
-			return ret, nil
-		}
-		logging.Error("connect error on %d times: %v", i+1, err)
-		time.Sleep(time.Second)
+func (conn *Conn) close() {
+	if conn.conn != nil {
+		conn.conn.Close()
 	}
-	return nil, err
 }
 
+// writeHandshake send handshake message, default timeout is 5 seconds
 func writeHandshake(conn *network.Conn, cfg *global.Configure) error {
 	var msg network.Msg
 	msg.XType = network.Msg_handshake
@@ -88,15 +105,99 @@ func writeHandshake(conn *network.Conn, cfg *global.Configure) error {
 	msg.To = "server"
 	msg.Payload = &network.Msg_Hsp{
 		Hsp: &network.HandshakePayload{
-			Enc: cfg.Enc[:],
+			Enc: cfg.Hasher.Hash(),
 		},
 	}
 	return conn.WriteMessage(&msg, 5*time.Second)
 }
 
+// isDrop check the message is dropped by linkid
+func (conn *Conn) isDrop(linkID string) bool {
+	conn.lockDrop.RLock()
+	defer conn.lockDrop.RUnlock()
+	_, ok := conn.drop[linkID]
+	return ok
+}
+
+// addDrop add to drop queue
+func (conn *Conn) addDrop(linkID string) {
+	conn.lockDrop.Lock()
+	defer conn.lockDrop.Unlock()
+	conn.drop[linkID] = time.Now().Add(dropBlockTimeout)
+}
+
+// getChan get read channel by linkid
+func (conn *Conn) getChan(linkID string) chan *network.Msg {
+	conn.RLock()
+	ch := conn.read[linkID]
+	conn.RUnlock()
+	if ch == nil {
+		ch = conn.unknownRead
+	}
+	return ch
+}
+
+// hookDispatch hook message before dispatcher
+func (conn *Conn) hookDispatch(msg *network.Msg) bool {
+	switch msg.GetXType() {
+	// if disconnected add linkid to drop list, and break the handle chain
+	case network.Msg_disconnect:
+		conn.addDrop(msg.GetLinkId())
+		// TODO: no need will block
+		// conn.onDisconnect <- msg.GetLinkId()
+		logging.Info("connection %s disconnected", msg.GetLinkId())
+		return false
+	}
+	return true
+}
+
+// handleLinkedMessage linked message handler, return false means break read loop
+func (conn *Conn) handleLinkedMessage(msg *network.Msg) bool {
+	linkID := msg.GetLinkId()
+	if conn.isDrop(linkID) {
+		return true
+	}
+	if !conn.hookDispatch(msg) {
+		return true
+	}
+	ch := conn.getChan(linkID)
+	select {
+	case ch <- msg:
+	case <-time.After(conn.cfg.WriteTimeout):
+		logging.Error("drop message: %s", msg.GetXType().String())
+		conn.addDrop(linkID)
+	case <-conn.ctx.Done():
+		return false
+	}
+	return true
+}
+
+// handleUnlinkedMessage unlinked message handler, return false means break read loop
+func (conn *Conn) handleUnlinkedMessage(msg *network.Msg) bool {
+	// TODO
+	return true
+}
+
+// loopRead loop read message
 func (conn *Conn) loopRead() {
 	defer utils.Recover("loopRead")
+	defer conn.close()
+	defer conn.cancel()
 	var timeout int
+	run := func(msg *network.Msg) bool {
+		timeout = 0
+		// skip keepalive message
+		if msg.GetXType() == network.Msg_keepalive {
+			return true
+		}
+		logging.Debug("read message %s(%s) from %s",
+			msg.GetXType().String(), msg.GetLinkId(), msg.GetFrom())
+		linkID := msg.GetLinkId()
+		if len(linkID) > 0 {
+			return conn.handleLinkedMessage(msg)
+		}
+		return conn.handleUnlinkedMessage(msg)
+	}
 	for {
 		msg, _, err := conn.conn.ReadMessage(conn.cfg.ReadTimeout)
 		if err != nil {
@@ -104,69 +205,54 @@ func (conn *Conn) loopRead() {
 				timeout++
 				if timeout >= 60 {
 					logging.Error("too many timeout times")
-					conn.conn, err = conn.tryConnect()
-					runtime.Assert(err)
-					timeout = 0
-					continue
+					return
 				}
 				continue
 			}
 			logging.Error("read message: %v", err)
-			conn.conn, err = conn.tryConnect()
-			runtime.Assert(err)
-			continue
+			return
 		}
-		timeout = 0
-		if msg.GetXType() == network.Msg_keepalive {
-			continue
-		}
-		logging.Debug("read message %s(%s) from %s",
-			msg.GetXType().String(), msg.GetLinkId(), msg.GetFrom())
-		linkID := msg.GetLinkId()
-		conn.lockDrop.RLock()
-		_, drop := conn.drop[linkID]
-		conn.lockDrop.RUnlock()
-		if drop {
-			continue
-		}
-		conn.RLock()
-		ch := conn.read[linkID]
-		conn.RUnlock()
-		if ch == nil {
-			ch = conn.unknownRead
-		}
-		select {
-		case ch <- msg:
-		case <-time.After(conn.cfg.ReadTimeout):
-			logging.Error("drop message: %s", msg.GetXType().String())
-			conn.lockDrop.Lock()
-			conn.drop[msg.GetLinkId()] = time.Now().Add(time.Minute)
-			conn.lockDrop.Unlock()
+		if !run(msg) {
+			return
 		}
 	}
 }
 
+// loopWrite loop write message
 func (conn *Conn) loopWrite() {
 	defer utils.Recover("loopWrite")
+	defer conn.close()
+	defer conn.cancel()
 	for {
-		msg := <-conn.write
+		var msg *network.Msg
+		select {
+		case msg = <-conn.write:
+		case <-conn.ctx.Done():
+			return
+		}
 		msg.From = conn.cfg.ID
 		err := conn.conn.WriteMessage(msg, conn.cfg.WriteTimeout)
 		if err != nil {
 			logging.Error("write message error on %s: %v",
 				conn.cfg.ID, err)
-			conn.conn, err = conn.connect()
-			runtime.Assert(err)
 			continue
 		}
 	}
 }
 
+// keepalive loop send keepalive message
 func (conn *Conn) keepalive() {
 	defer utils.Recover("keepalive")
+	defer conn.close()
+	defer conn.cancel()
+	tk := time.NewTicker(10 * time.Second)
 	for {
-		time.Sleep(10 * time.Second)
-		conn.SendKeepalive()
+		select {
+		case <-tk.C:
+			conn.SendKeepalive()
+		case <-conn.ctx.Done():
+			return
+		}
 	}
 }
 
@@ -175,13 +261,13 @@ func (conn *Conn) AddLink(id string) {
 	logging.Info("add link %s", id)
 	conn.Lock()
 	if _, ok := conn.read[id]; !ok {
-		conn.read[id] = make(chan *network.Msg, 10)
+		conn.read[id] = make(chan *network.Msg, 1024)
 	}
 	conn.Unlock()
 }
 
-// Reset reset message next read
-func (conn *Conn) Reset(id string, msg *network.Msg) {
+// Requeue requeue for next read
+func (conn *Conn) Requeue(id string, msg *network.Msg) {
 	conn.RLock()
 	ch := conn.read[id]
 	conn.RUnlock()
@@ -200,6 +286,12 @@ func (conn *Conn) ChanUnknown() <-chan *network.Msg {
 	return conn.unknownRead
 }
 
+// ChanDisconnect get channel of disconnect
+func (conn *Conn) ChanDisconnect() <-chan string {
+	return conn.onDisconnect
+}
+
+// checkDrop clear timeouted drop queue
 func (conn *Conn) checkDrop() {
 	for {
 		time.Sleep(time.Second)
@@ -219,4 +311,22 @@ func (conn *Conn) checkDrop() {
 		}
 		conn.lockDrop.Unlock()
 	}
+}
+
+// Wait wait for connection closed
+func (conn *Conn) Wait() {
+	<-conn.ctx.Done()
+}
+
+// ChanClose close read chan
+func (conn *Conn) ChanClose(id string) {
+	conn.Lock()
+	ch := conn.read[id]
+	if ch != nil {
+		close(ch)
+	}
+	delete(conn.read, id)
+	conn.Unlock()
+
+	conn.addDrop(id)
 }

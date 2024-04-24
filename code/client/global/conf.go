@@ -1,12 +1,12 @@
 package global
 
 import (
-	"crypto/md5"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/lwch/natpass/code/hash"
 	"github.com/lwch/natpass/code/utils"
 	"github.com/lwch/runtime"
 	"github.com/lwch/yaml"
@@ -31,7 +31,8 @@ type Configure struct {
 	ID               string
 	Server           string
 	UseSSL           bool
-	Enc              [md5.Size]byte
+	SSLInsecure      bool
+	Hasher           *hash.Hasher
 	Links            int
 	LogDir           string
 	LogSize          utils.Bytes
@@ -41,7 +42,8 @@ type Configure struct {
 	DashboardEnabled bool
 	DashboardListen  string
 	DashboardPort    uint16
-	Rules            []Rule
+	Rules            []*Rule
+	CodeDir          string
 }
 
 // LoadConf load configure file
@@ -50,8 +52,11 @@ func LoadConf(dir string) *Configure {
 		ID     string `yaml:"id"`
 		Server string `yaml:"server"`
 		Secret string `yaml:"secret"`
-		SSL    bool   `yaml:"ssl"`
-		Link   struct {
+		SSL    struct {
+			Enabled  bool `yaml:"enabled"`
+			Insecure bool `yaml:"insecure"`
+		} `yaml:"ssl"`
+		Link struct {
 			ReadTimeout  time.Duration `yaml:"read_timeout"`
 			WriteTimeout time.Duration `yaml:"write_timeout"`
 		} `yaml:"link"`
@@ -65,12 +70,27 @@ func LoadConf(dir string) *Configure {
 			Listen  string `yaml:"listen"`
 			Port    uint16 `yaml:"port"`
 		} `yaml:"dashboard"`
-		Rules []Rule `yaml:"rules"`
+		Rules   []*Rule `yaml:"rules"`
+		CodeDir string  `yaml:"codedir"`
 	}
+	cfg.ID = "unset"
+	cfg.Server = "127.0.0.1:6154"
+	cfg.SSL.Enabled = false
+	cfg.SSL.Insecure = false
+	cfg.Dashboard.Enabled = true
+	cfg.Dashboard.Listen = "0.0.0.0"
+	cfg.Dashboard.Port = 8080
+	cfg.Secret = "0123456789"
+	cfg.Link.ReadTimeout = time.Second
+	cfg.Link.WriteTimeout = time.Second
+	cfg.Log.Dir = "./logs"
+	cfg.Log.Size = 50 * 1024 * 1024
+	cfg.Log.Rotate = 7
+	cfg.CodeDir = "./code"
 	runtime.Assert(yaml.Decode(dir, &cfg))
 	for i, t := range cfg.Rules {
 		switch t.Type {
-		case "shell", "vnc", "bench":
+		case "shell", "vnc", "bench", "code-server":
 		default:
 			panic(fmt.Sprintf("unsupported type: %s", t.Type))
 		}
@@ -87,11 +107,17 @@ func LoadConf(dir string) *Configure {
 		runtime.Assert(err)
 		cfg.Log.Dir = filepath.Join(filepath.Dir(dir), cfg.Log.Dir)
 	}
+	if !filepath.IsAbs(cfg.CodeDir) {
+		dir, err := os.Executable()
+		runtime.Assert(err)
+		cfg.CodeDir = filepath.Join(filepath.Dir(dir), cfg.CodeDir)
+	}
 	return &Configure{
 		ID:               cfg.ID,
 		Server:           cfg.Server,
-		UseSSL:           cfg.SSL,
-		Enc:              md5.Sum([]byte(cfg.Secret)),
+		UseSSL:           cfg.SSL.Enabled,
+		SSLInsecure:      cfg.SSL.Insecure,
+		Hasher:           hash.New(cfg.Secret, 60),
 		ReadTimeout:      cfg.Link.ReadTimeout,
 		WriteTimeout:     cfg.Link.WriteTimeout,
 		LogDir:           cfg.Log.Dir,
@@ -101,5 +127,6 @@ func LoadConf(dir string) *Configure {
 		DashboardListen:  cfg.Dashboard.Listen,
 		DashboardPort:    cfg.Dashboard.Port,
 		Rules:            cfg.Rules,
+		CodeDir:          cfg.CodeDir,
 	}
 }

@@ -1,6 +1,7 @@
+# 目前不支持arm架构的windows和linux操作系统
 - name: vnc            # 链路名称
   target: remote       # 目标客户端ID
   type: vnc            # web vnc
   local_addr: 0.0.0.0  # 本地监听地址
-  local_port: 5900     # 本地监听端口号
+  # local_port: 5900     # 本地监听端口号
   fps: 10              # 刷新频率

@@ -19,7 +19,7 @@ import (
 type VNC struct {
 	sync.RWMutex
 	Name         string
-	cfg          global.Rule
+	cfg          *global.Rule
 	link         *Link
 	readTimeout  time.Duration
 	writeTimeout time.Duration
@@ -27,7 +27,7 @@ type VNC struct {
 }
 
 // New new vnc
-func New(cfg global.Rule, readTimeout, writeTimeout time.Duration) *VNC {
+func New(cfg *global.Rule, readTimeout, writeTimeout time.Duration) *VNC {
 	return &VNC{
 		Name:         cfg.Name,
 		cfg:          cfg,
@@ -47,7 +47,7 @@ func (v *VNC) NewLink(id, remote string, localConn net.Conn, remoteConn *conn.Co
 		remote: remoteConn,
 	}
 	if v.link != nil {
-		v.link.close()
+		v.link.Close(true)
 	}
 	v.link = link
 	return link
@@ -86,6 +86,11 @@ func (v *VNC) GetPort() uint16 {
 	return v.cfg.LocalPort
 }
 
+// OnDisconnect on disconnect message
+func (v *VNC) OnDisconnect(id string) {
+	// TODO
+}
+
 // Handle handle shell
 func (v *VNC) Handle(c *conn.Conn) {
 	defer func() {
@@ -104,9 +109,17 @@ func (v *VNC) Handle(c *conn.Conn) {
 	mux.HandleFunc("/clipboard", pf(v.Clipboard))
 	mux.HandleFunc("/ws/", pf(v.WS))
 	mux.HandleFunc("/", v.Render)
+	if v.cfg.LocalPort == 0 {
+		v.cfg.LocalPort = global.GeneratePort()
+		logging.Info("generate port for %s: %d", v.Name, v.cfg.LocalPort)
+	}
 	svr := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", v.cfg.LocalAddr, v.cfg.LocalPort),
 		Handler: mux,
 	}
 	runtime.Assert(svr.ListenAndServe())
+}
+
+func (v *VNC) remove(id string) {
+	v.link = nil
 }

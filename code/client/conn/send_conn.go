@@ -9,7 +9,7 @@ import (
 )
 
 // SendConnectReq send connect request message
-func (conn *Conn) SendConnectReq(id string, cfg global.Rule) {
+func (conn *Conn) SendConnectReq(id string, cfg *global.Rule) {
 	var msg network.Msg
 	msg.To = cfg.Target
 	msg.XType = network.Msg_connect_req
@@ -53,6 +53,13 @@ func (conn *Conn) SendConnectReq(id string, cfg global.Rule) {
 				XType: network.ConnectRequest_bench,
 			},
 		}
+	case "code-server":
+		msg.Payload = &network.Msg_Creq{
+			Creq: &network.ConnectRequest{
+				Name:  cfg.Name,
+				XType: network.ConnectRequest_code,
+			},
+		}
 	}
 	select {
 	case conn.write <- &msg:
@@ -61,7 +68,7 @@ func (conn *Conn) SendConnectReq(id string, cfg global.Rule) {
 }
 
 // SendConnectVnc send connect vnc request message
-func (conn *Conn) SendConnectVnc(id string, cfg global.Rule, quality uint64, showCursor bool) {
+func (conn *Conn) SendConnectVnc(id string, cfg *global.Rule, quality uint64, showCursor bool) {
 	var msg network.Msg
 	msg.To = cfg.Target
 	msg.XType = network.Msg_connect_req

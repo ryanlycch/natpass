@@ -8,14 +8,14 @@ import (
 	"github.com/lwch/runtime"
 )
 
-// BuildLogDir mkdir for log and chown
-func BuildLogDir(dir, u string) {
+// BuildDir mkdir and chown
+func BuildDir(dir, u string) {
 	runtime.Assert(os.MkdirAll(dir, 0755))
 	if len(u) > 0 {
 		us, err := user.Lookup(u)
 		runtime.Assert(err)
-		uid, _ := strconv.ParseInt(us.Uid, 10, 64)
-		gid, _ := strconv.ParseInt(us.Gid, 10, 64)
+		uid, _ := strconv.ParseInt(us.Uid, 10, 32)
+		gid, _ := strconv.ParseInt(us.Gid, 10, 32)
 		runtime.Assert(os.Chown(dir, int(uid), int(gid)))
 	}
 }

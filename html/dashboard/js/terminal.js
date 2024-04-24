@@ -15,7 +15,8 @@ var page = {
             $('#terms').empty();
             $.each(ret, function(_, rule) {
                 if (rule.type != 'shell' &&
-                    rule.type != 'vnc') {
+                    rule.type != 'vnc' &&
+                    rule.type != 'code-server') {
                     return;
                 }
                 $('#terms').append($(`<option value="${rule.port}">${rule.name}</option>`));
@@ -29,11 +30,10 @@ var page = {
         var idx = page.idx;
         var str = `
         <li class="nav-item">
-            <button class="nav-link active" type="button">
-                shell - [${$('#terms option:selected').text()}]
-            </button>
+            <button class="nav-link active" type="button"></button>
         </li>`;
         var obj = $(str);
+        obj.find('button').text('shell - ['+$('#terms option:selected').text()+']');
         obj.click(function() {
             var $this = $(this);
             $('#tabs>.nav-item>.active').removeClass('active');
@@ -43,11 +43,12 @@ var page = {
         });
         $('#tabs').append(obj);
         var str = `
-        <div class="tab-pane fade show active" id="tab-${idx}">
-            <iframe src="http://${location.hostname}:${$('#terms').val()}"
-                    style="width:100%;min-height:800px" allowfullscreen></iframe>
+        <div class="tab-pane fade show active">
+            <iframe style="width:100%;min-height:800px" allowfullscreen allow="clipboard-read;clipboard-write"></iframe>
         </div>`;
         var obj = $(str);
+        obj.attr('id', 'tab-'+idx);
+        obj.find('iframe').attr('src', 'http://'+location.hostname+':'+escape($('#terms').val()));
         $('#tab-content').append(obj);
         page.idx++;
     },
